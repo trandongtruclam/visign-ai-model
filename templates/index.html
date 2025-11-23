@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>sudo-visign - Học Ngôn Ngữ Ký Hiệu</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://player.vimeo.com/api/player.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+    <style>
+        :root {
+            --radius: 0.75rem;
+            --background: oklch(0.99 0.005 150);
+            --foreground: oklch(0.20 0.01 150);
+            --card: oklch(1 0 0);
+            --card-foreground: oklch(0.20 0.01 150);
+            --primary: oklch(0.55 0.15 145);
+            --primary-foreground: oklch(0.99 0 0);
+            --secondary: oklch(0.95 0.03 145);
+            --secondary-foreground: oklch(0.25 0.05 145);
+            --muted: oklch(0.96 0.01 145);
+            --muted-foreground: oklch(0.50 0.02 145);
+            --accent: oklch(0.93 0.05 145);
+            --accent-foreground: oklch(0.25 0.05 145);
+            --border: oklch(0.90 0.01 145);
+            --input: oklch(0.90 0.01 145);
+            --ring: oklch(0.55 0.15 145);
+        }
+
+        body {
+            background-color: oklch(0.99 0.005 150);
+            color: oklch(0.20 0.01 150);
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+
+        .card {
+            background: var(--card);
+            border-radius: var(--radius);
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+        }
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: var(--primary-foreground);
+            border-radius: calc(var(--radius) - 2px);
+            padding: 0.625rem 1.25rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            opacity: 0.9;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background-color: var(--secondary);
+            color: var(--secondary-foreground);
+            border-radius: calc(var(--radius) - 2px);
+            padding: 0.625rem 1.25rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        }
+
+        .btn-secondary:hover {
+            opacity: 0.9;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .select-wrapper {
+            position: relative;
+            width: 100%;
+        }
+
+        .select-wrapper::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            right: 1rem;
+            transform: translateY(-50%);
+            width: 0;
+            height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-top: 8px solid var(--muted-foreground);
+            pointer-events: none;
+            transition: border-color 0.2s;
+        }
+
+        .select-wrapper:focus-within::after {
+            border-top-color: var(--primary);
+        }
+
+        select {
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            background-color: var(--input);
+            border: 1.5px solid var(--border);
+            border-radius: calc(var(--radius) - 2px);
+            padding: 0.75rem 2.5rem 0.75rem 1rem;
+            color: var(--foreground);
+            width: 100%;
+            font-size: 0.9375rem;
+            font-weight: 400;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        }
+
+        select:hover {
+            border-color: var(--ring);
+            box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.1);
+            background-color: var(--card);
+        }
+
+        select:focus {
+            outline: none;
+            border-color: var(--ring);
+            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.1);
+            background-color: var(--card);
+        }
+
+        select option {
+            padding: 0.75rem;
+            background-color: var(--card);
+            color: var(--foreground);
+        }
+
+        select option:hover {
+            background-color: var(--accent);
+        }
+
+        label {
+            color: var(--foreground);
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            display: block;
+            font-size: 0.875rem;
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            padding-bottom: 56.25%; /* 16:9 aspect ratio */
+            background: #000;
+            border-radius: var(--radius);
+            overflow: hidden;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .video-container iframe,
+        .video-container video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        .webcam-container {
+            position: relative;
+            width: 100%;
+            background: #000;
+            border-radius: var(--radius);
+            overflow: hidden;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .webcam-container video {
+            width: 100%;
+            display: block;
+        }
+
+        .recording-indicator {
+            display: none;
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            background: rgba(239, 68, 68, 0.9);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: calc(var(--radius) - 2px);
+            font-weight: 600;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }
+
+        .recording-indicator.active {
+            display: block;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid var(--muted);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+    <div class="max-w-7xl mx-auto">
+        <h1 class="text-3xl font-bold mb-6 text-center" style="color: var(--primary);">
+            sudo-visign - Học Ngôn Ngữ Ký Hiệu
+        </h1>
+
+        <!-- Selection Controls -->
+        <div class="card mb-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label for="topicSelect">Chọn chủ đề</label>
+                    <div class="select-wrapper">
+                        <select id="topicSelect">
+                            <option value="">-- Tất cả chủ đề --</option>
+                            {% for topic in topics %}
+                            <option value="{{ topic }}">{{ topic }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label for="labelSelect">Chọn từ vựng</label>
+                    <div class="select-wrapper">
+                        <select id="labelSelect">
+                            <option value="">-- Chọn từ vựng --</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Upload Video Section -->
+        <div class="card mb-6">
+            <h2 class="text-xl font-semibold mb-4">Hoặc Upload Video Để Dự Đoán</h2>
+            <div class="flex flex-col md:flex-row gap-4 items-start">
+                <label for="videoUpload" class="btn-primary cursor-pointer inline-block">
+                    Chọn Video
+                    <input type="file" id="videoUpload" accept="video/*" class="hidden" />
+                </label>
+                <button id="clearUploadBtn" class="btn-secondary hidden">
+                    Xóa Video
+                </button>
+                <div id="uploadedVideoContainer" class="hidden flex-1">
+                    <div class="webcam-container relative">
+                        <video id="uploadedVideo" controls style="width: 100%; display: block;"></video>
+                        <canvas id="uploadedVideoCanvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>
+                    </div>
+                    <div class="mt-4">
+                        <button id="predictUploadedBtn" class="btn-primary">
+                            Dự Đoán Video Này
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content: Video and Webcam -->
+        <div id="mainContent" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <!-- Left: Tutorial Video -->
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-4">Video Hướng Dẫn</h2>
+                <div class="video-container" id="vimeoContainer">
+                    <div class="flex items-center justify-center h-full text-white">
+                        Chọn một từ vựng để xem video
+                    </div>
+                </div>
+                <div class="mt-4 flex gap-2">
+                    <button id="replayBtn" class="btn-secondary" disabled>
+                        Phát Lại
+                    </button>
+                </div>
+            </div>
+
+            <!-- Right: Webcam -->
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-4">Webcam Của Bạn</h2>
+                <div class="webcam-container relative">
+                    <video id="webcamVideo" autoplay playsinline></video>
+                    <canvas id="webcamCanvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>
+                    <div id="recordingIndicator" class="recording-indicator">
+                        Đang ghi... 5 giây
+                    </div>
+                </div>
+                <div class="mt-4 flex gap-2">
+                    <button id="startRecordBtn" class="btn-primary">
+                        Bắt Đầu Ghi
+                    </button>
+                    <button id="stopRecordBtn" class="btn-secondary" disabled>
+                        Dừng
+                    </button>
+                </div>
+                <!-- Prediction Results -->
+                <div id="predictionResults" class="mt-4 hidden">
+                    <h3 class="text-lg font-semibold mb-2">Kết quả dự đoán:</h3>
+                    <div id="predictionList" class="space-y-2"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Video data from server
+        const videos = {{ videos | tojson | safe }};
+        let vimeoPlayer = null;
+        let currentVideoId = null;
+        let stream = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let isRecording = false;
+        let recordingTimer = null;
+        let holistic = null;
+        let canvasCtx = null;
+        let keypointBuffer = []; // Store keypoints during recording
+        let uploadedVideoHolistic = null;
+        let uploadedVideoCanvasCtx = null;
+        let uploadedVideoKeypoints = []; // Store keypoints from uploaded video
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initializeMediaPipe();
+            await initializeCamera();
+            setupEventListeners();
+            updateLabelOptions();
+        });
+
+        // Initialize MediaPipe Holistic
+        async function initializeMediaPipe() {
+            const videoElement = document.getElementById('webcamVideo');
+            const canvasElement = document.getElementById('webcamCanvas');
+            canvasCtx = canvasElement.getContext('2d');
+
+            holistic = new Holistic({
+                locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+                }
+            });
+
+            holistic.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                enableSegmentation: false,
+                smoothSegmentation: false,
+                refineFaceLandmarks: false,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            holistic.onResults(onResults);
+
+            // Initialize holistic for uploaded video
+            const uploadedVideoElement = document.getElementById('uploadedVideo');
+            const uploadedCanvasElement = document.getElementById('uploadedVideoCanvas');
+            if (uploadedCanvasElement) {
+                uploadedVideoCanvasCtx = uploadedCanvasElement.getContext('2d');
+                
+                uploadedVideoHolistic = new Holistic({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+                    }
+                });
+
+                uploadedVideoHolistic.setOptions({
+                    modelComplexity: 1,
+                    smoothLandmarks: true,
+                    enableSegmentation: false,
+                    smoothSegmentation: false,
+                    refineFaceLandmarks: false,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                uploadedVideoHolistic.onResults(onUploadedVideoResults);
+            }
+        }
+
+        // Convert MediaPipe landmarks to keypoint format
+        function landmarksToKeypoint(results) {
+            const kp = {
+                pose: [],
+                left_hand: [],
+                right_hand: [],
+                face: []
+            };
+            
+            // Extract pose landmarks (upper body only - 25 points)
+            const upperBodyIndices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 21, 12, 14, 16, 18, 20, 22, 23, 24];
+            if (results.poseLandmarks) {
+                kp.pose = upperBodyIndices.map(idx => {
+                    const lm = results.poseLandmarks[idx];
+                    return [lm.x, lm.y, lm.z];
+                });
+            } else {
+                kp.pose = Array(25).fill([0, 0, 0]);
+            }
+            
+            // Extract hand landmarks
+            if (results.leftHandLandmarks) {
+                kp.left_hand = results.leftHandLandmarks.map(lm => [lm.x, lm.y, lm.z]);
+            } else {
+                kp.left_hand = Array(21).fill([0, 0, 0]);
+            }
+            
+            if (results.rightHandLandmarks) {
+                kp.right_hand = results.rightHandLandmarks.map(lm => [lm.x, lm.y, lm.z]);
+            } else {
+                kp.right_hand = Array(21).fill([0, 0, 0]);
+            }
+            
+            // Extract face landmarks
+            if (results.faceLandmarks) {
+                kp.face = results.faceLandmarks.map(lm => [lm.x, lm.y, lm.z]);
+            } else {
+                kp.face = Array(468).fill([0, 0, 0]);
+            }
+            
+            return kp;
+        }
+
+        // Draw landmarks on canvas
+        function onResults(results) {
+            // Clear canvas (transparent overlay)
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasCtx.canvas.width, canvasCtx.canvas.height);
+            
+            // Store keypoints during recording
+            if (isRecording) {
+                const kp = landmarksToKeypoint(results);
+                keypointBuffer.push(kp);
+            }
+            
+            // Draw pose
+            if (results.poseLandmarks) {
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 2 });
+                drawLandmarks(canvasCtx, results.poseLandmarks, { color: '#FF0000', lineWidth: 1, radius: 3 });
+            }
+            
+            // Draw hands
+            if (results.leftHandLandmarks) {
+                drawConnectors(canvasCtx, results.leftHandLandmarks, HAND_CONNECTIONS, { color: '#CC0000', lineWidth: 2 });
+                drawLandmarks(canvasCtx, results.leftHandLandmarks, { color: '#FF0000', lineWidth: 1, radius: 3 });
+            }
+            if (results.rightHandLandmarks) {
+                drawConnectors(canvasCtx, results.rightHandLandmarks, HAND_CONNECTIONS, { color: '#00CC00', lineWidth: 2 });
+                drawLandmarks(canvasCtx, results.rightHandLandmarks, { color: '#00FF00', lineWidth: 1, radius: 3 });
+            }
+            
+            // Draw face (simplified)
+            if (results.faceLandmarks) {
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_TESSELATION, { color: '#C0C0C070', lineWidth: 1 });
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_RIGHT_EYE, { color: '#FF3030', lineWidth: 1 });
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_RIGHT_EYEBROW, { color: '#FF3030', lineWidth: 1 });
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_LEFT_EYE, { color: '#30FF30', lineWidth: 1 });
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_LEFT_EYEBROW, { color: '#30FF30', lineWidth: 1 });
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_FACE_OVAL, { color: '#E0E0E0', lineWidth: 1 });
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_LIPS, { color: '#E0E0E0', lineWidth: 1 });
+            }
+            
+            canvasCtx.restore();
+        }
+
+        // Setup event listeners
+        function setupEventListeners() {
+            document.getElementById('topicSelect').addEventListener('change', updateLabelOptions);
+            document.getElementById('labelSelect').addEventListener('change', loadVideo);
+            document.getElementById('replayBtn').addEventListener('click', replayVideo);
+            document.getElementById('startRecordBtn').addEventListener('click', startRecording);
+            document.getElementById('stopRecordBtn').addEventListener('click', stopRecording);
+            document.getElementById('videoUpload').addEventListener('change', handleVideoUpload);
+            document.getElementById('predictUploadedBtn').addEventListener('click', predictUploadedVideo);
+            document.getElementById('clearUploadBtn').addEventListener('click', clearUploadedVideo);
+        }
+
+        // Initialize camera
+        async function initializeCamera() {
+            try {
+                const videoElement = document.getElementById('webcamVideo');
+                const canvasElement = document.getElementById('webcamCanvas');
+                
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false 
+                });
+                
+                videoElement.srcObject = stream;
+                
+                // Set canvas size and start processing
+                videoElement.addEventListener('loadedmetadata', () => {
+                    canvasElement.width = videoElement.videoWidth;
+                    canvasElement.height = videoElement.videoHeight;
+                    
+                    // Start MediaPipe processing loop
+                    if (holistic) {
+                        processVideoFrame();
+                    }
+                });
+            } catch (error) {
+                console.error('Error accessing camera:', error);
+                alert('Không thể truy cập camera. Vui lòng cho phép quyền truy cập camera.');
+            }
+        }
+
+        // Process video frames with MediaPipe
+        async function processVideoFrame() {
+            const videoElement = document.getElementById('webcamVideo');
+            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA && holistic) {
+                await holistic.send({ image: videoElement });
+            }
+            requestAnimationFrame(processVideoFrame);
+        }
+
+        // Update label options based on selected topic
+        function updateLabelOptions() {
+            const topicSelect = document.getElementById('topicSelect');
+            const labelSelect = document.getElementById('labelSelect');
+            const selectedTopic = topicSelect.value;
+
+            // Clear existing options
+            labelSelect.innerHTML = '<option value="">-- Chọn từ vựng --</option>';
+
+            // Filter videos by topic
+            const filteredVideos = selectedTopic 
+                ? videos.filter(v => v.topic === selectedTopic)
+                : videos;
+
+            // Add options
+            filteredVideos.forEach(video => {
+                const option = document.createElement('option');
+                option.value = video.id;
+                option.textContent = `${video.label} (${video.topic})`;
+                option.dataset.vimeoId = video.vimeo_id;
+                labelSelect.appendChild(option);
+            });
+        }
+
+        // Load Vimeo video
+        function loadVideo() {
+            const labelSelect = document.getElementById('labelSelect');
+            const selectedOption = labelSelect.options[labelSelect.selectedIndex];
+            
+            if (!selectedOption || !selectedOption.value) {
+                return;
+            }
+
+            const vimeoId = selectedOption.dataset.vimeoId;
+            if (!vimeoId) {
+                return;
+            }
+
+            currentVideoId = vimeoId;
+            const container = document.getElementById('vimeoContainer');
+            
+            // Create Vimeo player
+            container.innerHTML = `<iframe 
+                src="https://player.vimeo.com/video/${vimeoId}?autoplay=0&loop=0" 
+                frameborder="0" 
+                allow="autoplay; fullscreen; picture-in-picture" 
+                allowfullscreen
+                style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"
+            ></iframe>`;
+
+            // Enable replay button
+            document.getElementById('replayBtn').disabled = false;
+        }
+
+        // Replay video
+        function replayVideo() {
+            if (!currentVideoId) return;
+            
+            const container = document.getElementById('vimeoContainer');
+            const iframe = container.querySelector('iframe');
+            if (iframe) {
+                // Reload iframe to restart video
+                const src = iframe.src.split('?')[0];
+                iframe.src = src + '?autoplay=1&loop=0';
+            }
+        }
+
+        // Start recording
+        function startRecording() {
+            if (!stream || isRecording) return;
+
+            isRecording = true;
+            keypointBuffer = []; // Reset keypoint buffer
+            recordedChunks = [];
+            
+            const video = document.getElementById('webcamVideo');
+            mediaRecorder = new MediaRecorder(stream, {
+                mimeType: 'video/webm;codecs=vp9'
+            });
+
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    recordedChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = async () => {
+                // Immediately predict from keypoints (much faster than processing video)
+                await predictFromKeypoints();
+            };
+
+            // Start recording
+            mediaRecorder.start();
+            
+            // Show recording indicator
+            document.getElementById('recordingIndicator').classList.add('active');
+            document.getElementById('startRecordBtn').disabled = true;
+            document.getElementById('stopRecordBtn').disabled = false;
+
+            // Auto stop after 5 seconds
+            let secondsLeft = 5;
+            const updateTimer = () => {
+                const indicator = document.getElementById('recordingIndicator');
+                indicator.textContent = `Đang ghi... ${secondsLeft} giây`;
+                secondsLeft--;
+                
+                if (secondsLeft >= 0) {
+                    recordingTimer = setTimeout(updateTimer, 1000);
+                } else {
+                    stopRecording();
+                }
+            };
+            updateTimer();
+        }
+
+        // Stop recording
+        function stopRecording() {
+            if (!isRecording) return;
+
+            isRecording = false;
+            
+            if (recordingTimer) {
+                clearTimeout(recordingTimer);
+                recordingTimer = null;
+            }
+
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+
+            // Hide recording indicator
+            document.getElementById('recordingIndicator').classList.remove('active');
+            document.getElementById('startRecordBtn').disabled = false;
+            document.getElementById('stopRecordBtn').disabled = true;
+        }
+
+        // Predict from keypoints (much faster than processing video)
+        async function predictFromKeypoints() {
+            const resultsDiv = document.getElementById('predictionResults');
+            const listDiv = document.getElementById('predictionList');
+            
+            // Show loading
+            resultsDiv.classList.remove('hidden');
+            listDiv.innerHTML = `
+                <div class="flex items-center gap-3 p-4">
+                    <div class="spinner"></div>
+                    <div>
+                        <p class="font-medium">Đang dự đoán...</p>
+                    </div>
+                </div>
+            `;
+            
+            const startTime = Date.now();
+            
+            try {
+                // Send keypoints instead of video (much faster!)
+                const response = await fetch('/api/predict-keypoints', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        keypoints: keypointBuffer
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+                
+                // Display results
+                if (data.predictions && data.predictions.length > 0) {
+                    listDiv.innerHTML = '';
+                    data.predictions.forEach((pred, index) => {
+                        const item = document.createElement('div');
+                        item.className = 'p-3 rounded-lg border transition-all';
+                        item.style.backgroundColor = index === 0 ? 'var(--accent)' : 'var(--muted)';
+                        item.style.borderColor = index === 0 ? 'var(--ring)' : 'var(--border)';
+                        item.innerHTML = `
+                            <div class="flex justify-between items-center">
+                                <span class="font-medium">${index + 1}. ${pred.label}</span>
+                                <span class="text-sm font-semibold">${pred.probability.toFixed(1)}%</span>
+                            </div>
+                        `;
+                        listDiv.appendChild(item);
+                    });
+                    
+                    // Add processing time info
+                    const timeInfo = document.createElement('p');
+                    timeInfo.className = 'text-xs text-muted-foreground mt-2 text-right';
+                    timeInfo.textContent = `Dự đoán trong ${elapsedTime}s`;
+                    listDiv.appendChild(timeInfo);
+                } else {
+                    listDiv.innerHTML = '<p class="text-muted-foreground">Không có kết quả dự đoán.</p>';
+                }
+            } catch (error) {
+                console.error('Error predicting:', error);
+                listDiv.innerHTML = `<p class="text-destructive">Lỗi: ${error.message}</p>`;
+            }
+        }
+
+        // Handle video upload
+        function handleVideoUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const uploadedVideo = document.getElementById('uploadedVideo');
+            const container = document.getElementById('uploadedVideoContainer');
+            const canvas = document.getElementById('uploadedVideoCanvas');
+            const clearBtn = document.getElementById('clearUploadBtn');
+            const mainContent = document.getElementById('mainContent');
+
+            uploadedVideoKeypoints = []; // Reset keypoints
+            
+            // Create new URL for video
+            const videoURL = URL.createObjectURL(file);
+            uploadedVideo.src = videoURL;
+            container.classList.remove('hidden');
+            clearBtn.classList.remove('hidden');
+            
+            // Hide main content (tutorial video + webcam)
+            mainContent.style.display = 'none';
+
+            uploadedVideo.addEventListener('loadedmetadata', () => {
+                canvas.width = uploadedVideo.videoWidth;
+                canvas.height = uploadedVideo.videoHeight;
+                
+                // Start processing when video starts playing
+                uploadedVideo.addEventListener('play', () => {
+                    uploadedVideoKeypoints = []; // Reset when replaying
+                    processUploadedVideo();
+                });
+                
+                // Auto-play to start processing
+                uploadedVideo.play().catch(err => {
+                    console.log('Auto-play prevented:', err);
+                });
+            });
+        }
+
+        // Clear uploaded video
+        function clearUploadedVideo() {
+            const uploadedVideo = document.getElementById('uploadedVideo');
+            const container = document.getElementById('uploadedVideoContainer');
+            const clearBtn = document.getElementById('clearUploadBtn');
+            const videoUpload = document.getElementById('videoUpload');
+            const mainContent = document.getElementById('mainContent');
+
+            // Stop video processing
+            if (uploadedVideo) {
+                uploadedVideo.pause();
+                uploadedVideo.src = '';
+                URL.revokeObjectURL(uploadedVideo.src);
+            }
+
+            // Clear keypoints
+            uploadedVideoKeypoints = [];
+
+            // Hide uploaded video container
+            container.classList.add('hidden');
+            clearBtn.classList.add('hidden');
+            
+            // Show main content again
+            mainContent.style.display = 'grid';
+            
+            // Reset file input
+            videoUpload.value = '';
+        }
+
+        // Process uploaded video frames
+        let isProcessingUploadedVideo = false;
+        async function processUploadedVideo() {
+            const uploadedVideo = document.getElementById('uploadedVideo');
+            
+            if (!uploadedVideo || !uploadedVideoHolistic || isProcessingUploadedVideo) {
+                return;
+            }
+
+            if (uploadedVideo.ended || uploadedVideo.paused) {
+                // If paused or ended, check again after a delay
+                setTimeout(() => requestAnimationFrame(processUploadedVideo), 100);
+                return;
+            }
+
+            if (uploadedVideo.readyState >= uploadedVideo.HAVE_CURRENT_DATA) {
+                isProcessingUploadedVideo = true;
+                try {
+                    await uploadedVideoHolistic.send({ image: uploadedVideo });
+                } catch (error) {
+                    console.error('Error processing frame:', error);
+                }
+                isProcessingUploadedVideo = false;
+            }
+
+            // Continue processing
+            requestAnimationFrame(processUploadedVideo);
+        }
+
+        // Handle results from uploaded video
+        function onUploadedVideoResults(results) {
+            if (!uploadedVideoCanvasCtx) return;
+
+            // Clear canvas
+            uploadedVideoCanvasCtx.save();
+            uploadedVideoCanvasCtx.clearRect(0, 0, uploadedVideoCanvasCtx.canvas.width, uploadedVideoCanvasCtx.canvas.height);
+            
+            // Store keypoints
+            const kp = landmarksToKeypoint(results);
+            uploadedVideoKeypoints.push(kp);
+            
+            // Draw pose
+            if (results.poseLandmarks) {
+                drawConnectors(uploadedVideoCanvasCtx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 2 });
+                drawLandmarks(uploadedVideoCanvasCtx, results.poseLandmarks, { color: '#FF0000', lineWidth: 1, radius: 3 });
+            }
+            
+            // Draw hands
+            if (results.leftHandLandmarks) {
+                drawConnectors(uploadedVideoCanvasCtx, results.leftHandLandmarks, HAND_CONNECTIONS, { color: '#CC0000', lineWidth: 2 });
+                drawLandmarks(uploadedVideoCanvasCtx, results.leftHandLandmarks, { color: '#FF0000', lineWidth: 1, radius: 3 });
+            }
+            if (results.rightHandLandmarks) {
+                drawConnectors(uploadedVideoCanvasCtx, results.rightHandLandmarks, HAND_CONNECTIONS, { color: '#00CC00', lineWidth: 2 });
+                drawLandmarks(uploadedVideoCanvasCtx, results.rightHandLandmarks, { color: '#00FF00', lineWidth: 1, radius: 3 });
+            }
+            
+            // Draw face
+            if (results.faceLandmarks) {
+                drawConnectors(uploadedVideoCanvasCtx, results.faceLandmarks, FACEMESH_TESSELATION, { color: '#C0C0C070', lineWidth: 1 });
+                drawConnectors(uploadedVideoCanvasCtx, results.faceLandmarks, FACEMESH_RIGHT_EYE, { color: '#FF3030', lineWidth: 1 });
+                drawConnectors(uploadedVideoCanvasCtx, results.faceLandmarks, FACEMESH_RIGHT_EYEBROW, { color: '#FF3030', lineWidth: 1 });
+                drawConnectors(uploadedVideoCanvasCtx, results.faceLandmarks, FACEMESH_LEFT_EYE, { color: '#30FF30', lineWidth: 1 });
+                drawConnectors(uploadedVideoCanvasCtx, results.faceLandmarks, FACEMESH_LEFT_EYEBROW, { color: '#30FF30', lineWidth: 1 });
+                drawConnectors(uploadedVideoCanvasCtx, results.faceLandmarks, FACEMESH_FACE_OVAL, { color: '#E0E0E0', lineWidth: 1 });
+                drawConnectors(uploadedVideoCanvasCtx, results.faceLandmarks, FACEMESH_LIPS, { color: '#E0E0E0', lineWidth: 1 });
+            }
+            
+            uploadedVideoCanvasCtx.restore();
+        }
+
+        // Predict from uploaded video
+        async function predictUploadedVideo() {
+            if (uploadedVideoKeypoints.length < 10) {
+                alert('Video chưa được xử lý đủ. Vui lòng chờ video phát một lúc.');
+                return;
+            }
+
+            const resultsDiv = document.getElementById('predictionResults');
+            const listDiv = document.getElementById('predictionList');
+            
+            // Show loading
+            resultsDiv.classList.remove('hidden');
+            listDiv.innerHTML = `
+                <div class="flex items-center gap-3 p-4">
+                    <div class="spinner"></div>
+                    <div>
+                        <p class="font-medium">Đang dự đoán...</p>
+                    </div>
+                </div>
+            `;
+            
+            const startTime = Date.now();
+            
+            try {
+                const response = await fetch('/api/predict-keypoints', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        keypoints: uploadedVideoKeypoints
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+                
+                // Display results
+                if (data.predictions && data.predictions.length > 0) {
+                    listDiv.innerHTML = '';
+                    data.predictions.forEach((pred, index) => {
+                        const item = document.createElement('div');
+                        item.className = 'p-3 rounded-lg border transition-all';
+                        item.style.backgroundColor = index === 0 ? 'var(--accent)' : 'var(--muted)';
+                        item.style.borderColor = index === 0 ? 'var(--ring)' : 'var(--border)';
+                        item.innerHTML = `
+                            <div class="flex justify-between items-center">
+                                <span class="font-medium">${index + 1}. ${pred.label}</span>
+                                <span class="text-sm font-semibold">${pred.probability.toFixed(1)}%</span>
+                            </div>
+                        `;
+                        listDiv.appendChild(item);
+                    });
+                    
+                    // Add processing time info
+                    const timeInfo = document.createElement('p');
+                    timeInfo.className = 'text-xs text-muted-foreground mt-2 text-right';
+                    timeInfo.textContent = `Dự đoán trong ${elapsedTime}s`;
+                    listDiv.appendChild(timeInfo);
+                } else {
+                    listDiv.innerHTML = '<p class="text-muted-foreground">Không có kết quả dự đoán.</p>';
+                }
+            } catch (error) {
+                console.error('Error predicting:', error);
+                listDiv.innerHTML = `<p class="text-destructive">Lỗi: ${error.message}</p>`;
+            }
+        }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+        });
+    </script>
+</body>
+</html>
+
