@@ -1,21 +1,64 @@
+import json
 import os
 import glob
+import re
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
 
-# Build index CSV mapping filepath,label
-def build_index_csv(data_dir, out_csv):
+_LEGACY_NUMERIC_STEM = re.compile(r"^\d+$")
+
+
+def _source_id_from_filename(filename):
+    """Map an augmented .npz filename to its underlying source-video id.
+
+    See ``src/keypoints/split_sources.py`` for the naming conventions.
+    """
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    if "__" in stem:
+        return stem.split("__", 1)[0]
+    if _LEGACY_NUMERIC_STEM.match(stem):
+        return "orig"
+    return stem
+
+
+# Build index CSV mapping filepath,label,source_video[,split]
+def build_index_csv(data_dir, out_csv, splits_json=None):
+    """Walk `data_dir` and emit an index of augmented samples.
+
+    Columns:
+        filepath      : absolute path to the .npz feature file
+        label         : class label (folder name)
+        source_video  : unique source-video id ``<label>/<source_id>``
+        split         : "train" / "val" / "test" — only present when
+                        `splits_json` is provided
+    """
+    splits = None
+    if splits_json and os.path.exists(splits_json):
+        with open(splits_json, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        splits = payload.get("sources", payload)
+
     rows = []
     for label in os.listdir(data_dir):
         label_dir = os.path.join(data_dir, label)
         if not os.path.isdir(label_dir):
             continue
         for f in glob.glob(os.path.join(label_dir, '*.npz')):
-            rows.append({'filepath': f, 'label': label})
+            source_id = _source_id_from_filename(f)
+            source_key = f"{label}/{source_id}"
+            row = {"filepath": f, "label": label, "source_video": source_key}
+            if splits is not None:
+                # Default unassigned sources to "train" so the column is
+                # always populated.
+                row["split"] = splits.get(source_key, "train")
+            rows.append(row)
     df = pd.DataFrame(rows)
     df.to_csv(out_csv, index=False)
     print(f"Saved index to {out_csv}, total: {len(df)} samples.")
+    if "split" in df.columns:
+        print("Split counts:")
+        print(df["split"].value_counts().to_string())
 
 # Select face subset (lips + eyes + brows) or PCA-reduced
 FACE_IDX_SUBSET = list(range(61, 88)) + list(range(246, 276)) + list(range(300, 332))  # lips + eyes + brows
@@ -88,17 +131,28 @@ def preprocess_sample(npz_path, use_pca=False, n_pca=30, add_velocity=True):
     return feat  # shape: (frames, dims)
 
 if __name__ == "__main__":
-    # Step 1: Build index CSV (run once)
-    build_index_csv("augmented", "index.csv")
+    import argparse
 
-    # Step 2: Preprocess single sample demo
-    # sample_path = "augmented/ai cho/0.npz"
-    # feat = preprocess_sample(sample_path)
-    # print(f"Shape: {feat.shape} (frames, features)")
+    parser = argparse.ArgumentParser(
+        description="Build index.csv and preprocess augmented keypoints to feature .npy files"
+    )
+    parser.add_argument("--data-dir", default="augmented",
+                        help="Directory containing augmented .npz files (<label>/<src>__<i>.npz)")
+    parser.add_argument("--index-csv", default="index.csv")
+    parser.add_argument("--feature-dir", default="preprocessed_npz")
+    parser.add_argument("--splits-json", default=None,
+                        help="Optional splits.json from split_sources.py to add a `split` column")
+    parser.add_argument("--no-preprocess", action="store_true",
+                        help="Only build index.csv, skip feature extraction")
+    args = parser.parse_args()
 
-    # Step 3: Batch process entire dataset
-    df = pd.read_csv("index.csv")
-    out_dir = "preprocessed_npz"
+    build_index_csv(args.data_dir, args.index_csv, splits_json=args.splits_json)
+
+    if args.no_preprocess:
+        raise SystemExit(0)
+
+    df = pd.read_csv(args.index_csv)
+    out_dir = args.feature_dir
     os.makedirs(out_dir, exist_ok=True)
     for i, row in df.iterrows():
         fpath = row['filepath']
@@ -108,4 +162,3 @@ if __name__ == "__main__":
         np.save(out_path, feat)
         if i % 100 == 0:
             print(f"Processed {i}/{len(df)}")
-    pass

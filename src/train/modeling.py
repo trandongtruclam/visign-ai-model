@@ -112,6 +112,7 @@ class LSTMClassifier(nn.Module):
 class SampleInfo:
     feature_path: Path
     label_idx: int
+    source_video: str = ""
 
 
 class SignSequenceDataset(Dataset):
@@ -276,7 +277,13 @@ def prepare_samples(
     index_csv: Path,
     feature_dir: Path,
     label_column: str = "label",
-) -> Tuple[List[SampleInfo], Dict[str, int]]:
+) -> Tuple[List[SampleInfo], Dict[str, int], pd.DataFrame]:
+    """Materialise SampleInfo objects from the index CSV.
+
+    The returned DataFrame is the same row ordering used to compute
+    `sample_<row_idx>_<label>.npy` paths, so downstream code can join on
+    `row_idx` to recover source/ split metadata.
+    """
     df = pd.read_csv(index_csv)
     if label_column not in df.columns:
         raise ValueError(f"Column '{label_column}' missing from {index_csv}")
@@ -293,67 +300,161 @@ def prepare_samples(
         if not feature_path.exists():
             missing_files.append(str(feature_path))
             continue
-        samples.append(SampleInfo(feature_path=feature_path, label_idx=label2idx[label]))
+        samples.append(
+            SampleInfo(
+                feature_path=feature_path,
+                label_idx=label2idx[label],
+                source_video=str(row.get("source_video", "")),
+            )
+        )
 
     if missing_files:
         raise FileNotFoundError(
             "Missing preprocessed feature files. Examples:\n" + "\n".join(missing_files[:5])
         )
 
-    return samples, label2idx
+    return samples, label2idx, df
 
 
 def split_samples(
     samples: List[SampleInfo],
     val_ratio: float,
     seed: int,
-) -> Tuple[List[SampleInfo], List[SampleInfo]]:
-    if not 0.0 < val_ratio < 1.0:
-        raise ValueError("val_ratio must be between 0 and 1")
+    test_ratio: float = 0.0,
+    df: Optional[pd.DataFrame] = None,
+    strict_source_split: bool = False,
+) -> Tuple[List[SampleInfo], List[SampleInfo], List[SampleInfo]]:
+    """Return (train, val, test) sample lists.
 
+    Behaviour:
+    * If `df` carries a ``split`` column we honour it verbatim (this is the
+      preferred path when ``preprocess_pipeline.py`` was given a
+      ``splits.json``). The function then ignores ``val_ratio`` /
+      ``test_ratio``.
+    * Otherwise we group samples by ``source_video`` and split *sources*
+      (not individual augmentations) with the requested ratios. Singleton
+      classes are forced into train unless ``strict_source_split`` is True.
+    * Final fallback (no source_video info) uses the legacy stratified
+      sample-level split. This is preserved only for backward compatibility
+      and emits a warning because it leaks augmentations across splits.
+    """
+    if val_ratio < 0 or test_ratio < 0 or val_ratio + test_ratio >= 1.0:
+        raise ValueError("val_ratio and test_ratio must be >=0 and sum to <1")
+
+    # Path 1: index.csv already carries the split
+    if df is not None and "split" in df.columns:
+        split_col = df["split"].astype(str).tolist()
+        # `samples` only includes rows whose feature .npy exists; align by
+        # mapping samples back to their row id (they were appended in the
+        # same order as df iteration).
+        if len(split_col) != len(samples):
+            # Some rows were dropped because of missing feature files; we
+            # therefore use the source_video carried on each sample to look
+            # up its split. This is robust to row-count mismatches.
+            source_to_split = dict(zip(df["source_video"].astype(str), split_col))
+            assignments = [source_to_split.get(s.source_video, "train") for s in samples]
+        else:
+            assignments = split_col
+        train_samples = [s for s, a in zip(samples, assignments) if a == "train"]
+        val_samples = [s for s, a in zip(samples, assignments) if a == "val"]
+        test_samples = [s for s, a in zip(samples, assignments) if a == "test"]
+        return train_samples, val_samples, test_samples
+
+    # Path 2: source-level split using SampleInfo.source_video
+    sources_present = [s.source_video for s in samples if s.source_video]
+    if sources_present and len(sources_present) == len(samples):
+        from src.keypoints.split_sources import build_split
+
+        label_to_sources: Dict[str, List[str]] = {}
+        idx2label = {s.label_idx: None for s in samples}
+        # Rebuild label index → label string via the dataframe if available
+        if df is not None and "label" in df.columns:
+            for _, row in df.iterrows():
+                label_to_sources.setdefault(str(row["label"]), []).append(
+                    str(row["source_video"]).split("/", 1)[-1]
+                )
+            label_to_sources = {k: sorted(set(v)) for k, v in label_to_sources.items()}
+        else:
+            # Fall back to grouping by source_video prefix ("<label>/<src>")
+            for s in samples:
+                label_part, _, src_part = s.source_video.partition("/")
+                label_to_sources.setdefault(label_part, []).append(src_part or s.source_video)
+            label_to_sources = {k: sorted(set(v)) for k, v in label_to_sources.items()}
+
+        assignment = build_split(
+            label_to_sources,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            seed=seed,
+            strict=strict_source_split,
+        )
+        train_samples = [s for s in samples if assignment.get(s.source_video, "train") == "train"]
+        val_samples = [s for s in samples if assignment.get(s.source_video, "train") == "val"]
+        test_samples = [s for s in samples if assignment.get(s.source_video, "train") == "test"]
+        return train_samples, val_samples, test_samples
+
+    # Path 3: legacy stratified sample-level split (leaky — warn loudly)
+    print(
+        "[WARN] No source_video information in index.csv; falling back to a "
+        "sample-level stratified split. Augmentations of the same source clip "
+        "will leak across train/val and reported metrics will be inflated."
+    )
     labels = [s.label_idx for s in samples]
     num_classes = max(labels) + 1
     indices = np.arange(len(samples))
 
-    # Stratified split
     from sklearn.model_selection import train_test_split
 
+    holdout = val_ratio + test_ratio
     try:
-        train_idx, val_idx = train_test_split(
+        train_idx, holdout_idx = train_test_split(
             indices,
-            test_size=val_ratio,
+            test_size=holdout,
             random_state=seed,
             stratify=labels,
         )
-    except ValueError as exc:
-        print(
-            "[warn] Stratified split failed (likely due to rare classes in val split). "
-            "Falling back to unstratified split."
+    except ValueError:
+        print("[warn] Stratified split failed; using random split.")
+        train_idx, holdout_idx = train_test_split(
+            indices, test_size=holdout, random_state=seed, stratify=None
         )
-        train_idx, val_idx = train_test_split(
-            indices,
-            test_size=val_ratio,
-            random_state=seed,
-            stratify=None,
-        )
+
+    if test_ratio > 0:
+        holdout_labels = [labels[i] for i in holdout_idx]
+        rel_test = test_ratio / holdout
+        try:
+            val_idx, test_idx = train_test_split(
+                holdout_idx,
+                test_size=rel_test,
+                random_state=seed,
+                stratify=holdout_labels,
+            )
+        except ValueError:
+            val_idx, test_idx = train_test_split(
+                holdout_idx, test_size=rel_test, random_state=seed, stratify=None
+            )
+    else:
+        val_idx, test_idx = holdout_idx, np.array([], dtype=int)
+
     train_samples = [samples[i] for i in train_idx]
     val_samples = [samples[i] for i in val_idx]
-    # Ensure every class present in train split by moving rare examples from val if needed
+    test_samples = [samples[i] for i in test_idx]
+
+    # Ensure every class is present in train (legacy behaviour)
     present = {s.label_idx for s in train_samples}
     missing = set(range(num_classes)) - present
     if missing:
-        val_list = list(val_samples)
+        movable = list(val_samples)
         for cls in sorted(missing):
-            candidate = next((s for s in val_list if s.label_idx == cls), None)
+            candidate = next((s for s in movable if s.label_idx == cls), None)
             if candidate is None:
                 raise RuntimeError(
-                    f"Unable to ensure presence of class {cls} in training split. "
-                    "Consider reducing val_ratio or augmenting data."
+                    f"Unable to ensure presence of class {cls} in training split."
                 )
             train_samples.append(candidate)
-            val_list.remove(candidate)
-        val_samples = val_list
-    return train_samples, val_samples
+            movable.remove(candidate)
+        val_samples = movable
+    return train_samples, val_samples, test_samples
 
 
 def save_checkpoint(
@@ -397,12 +498,40 @@ def train_model(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    samples, label2idx = prepare_samples(index_csv, feature_dir)
+    samples, label2idx, index_df = prepare_samples(index_csv, feature_dir)
     num_classes = len(label2idx)
     print(f"Loaded {len(samples)} samples across {num_classes} classes")
 
-    train_samples, val_samples = split_samples(samples, args.val_ratio, args.seed)
-    print(f"Train samples: {len(train_samples)}, Val samples: {len(val_samples)}")
+    train_samples, val_samples, test_samples = split_samples(
+        samples,
+        val_ratio=args.val_ratio,
+        seed=args.seed,
+        test_ratio=args.test_ratio,
+        df=index_df,
+        strict_source_split=args.strict_source_split,
+    )
+    print(
+        f"Train samples: {len(train_samples)}, "
+        f"Val samples: {len(val_samples)}, "
+        f"Test samples (held out, untouched): {len(test_samples)}"
+    )
+
+    # Persist the realised split for downstream evaluation reproducibility.
+    splits_payload = {
+        "val_ratio": args.val_ratio,
+        "test_ratio": args.test_ratio,
+        "seed": args.seed,
+        "strict_source_split": bool(args.strict_source_split),
+        "sources": {
+            **{s.source_video: "train" for s in train_samples if s.source_video},
+            **{s.source_video: "val" for s in val_samples if s.source_video},
+            **{s.source_video: "test" for s in test_samples if s.source_video},
+        },
+    }
+    splits_out = output_dir / "splits.json"
+    with open(splits_out, "w", encoding="utf-8") as f:
+        json.dump(splits_payload, f, ensure_ascii=False, indent=2)
+    print(f"Persisted split manifest to {splits_out}")
 
     train_dataset = SignSequenceDataset(train_samples, has_velocity=not args.no_velocity)
     val_dataset = SignSequenceDataset(val_samples, has_velocity=not args.no_velocity)
@@ -516,6 +645,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--feature-dir", type=str, default="preprocessed_npz", dest="feature_dir")
     parser.add_argument("--output-dir", type=str, default="artifacts", dest="output_dir")
     parser.add_argument("--val-ratio", type=float, default=0.1, dest="val_ratio")
+    parser.add_argument("--test-ratio", type=float, default=0.15, dest="test_ratio",
+                        help="Fraction of source videos held out as a permanent test set. "
+                             "When index.csv already carries a `split` column this flag is ignored.")
+    parser.add_argument("--strict-source-split", action="store_true", dest="strict_source_split",
+                        help="Allow singleton-class sources to be assigned to val/test (off by default).")
     parser.add_argument("--batch-size", type=int, default=32, dest="batch_size")
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--lr", type=float, default=1e-3)

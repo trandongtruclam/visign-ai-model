@@ -1,0 +1,29 @@
+{
+  "checkpoint": "artifacts/lstm_150.pt",
+  "split": "test",
+  "sample_count": 0,
+  "config": {
+    "in_feat": 628,
+    "proj_dim": 256,
+    "hidden_size": 256,
+    "num_layers": 2,
+    "bidirectional": true,
+    "dropout": 0.35,
+    "num_classes": 274,
+    "use_attention": true
+  },
+  "latency": [
+    {
+      "device": "cpu",
+      "batch_size": 1,
+      "seq_len": 150,
+      "iters": 100,
+      "mean_ms": 7.159945000894368,
+      "median_ms": 7.017449999693781,
+      "p95_ms": 8.452040009433402,
+      "min_ms": 4.8417999933008105,
+      "max_ms": 10.4779000103008
+    }
+  ],
+  "metrics": null
+}

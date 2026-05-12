@@ -175,27 +175,41 @@ def sanitize_filename(filename):
     return filename.strip()
 
 def process_dataset(videos_dir, labels_csv, output_dir):
+    """Extract keypoints for every video in `labels_csv`.
+
+    Each source video is written to `<output_dir>/<label>/<video_basename>.npz`
+    (without the .mp4 extension). Previously the function used a fixed `0.npz`
+    target which overwrote multi-recording labels (e.g. D0119B/N/T → đúng không?).
+    Keeping one file per source video is required for source-level train/val/test
+    splits in the training pipeline.
+    """
     df = pd.read_csv(labels_csv)
     video_to_label = dict(zip(df['VIDEO'], df['LABEL']))
-    
+
     os.makedirs(output_dir, exist_ok=True)
-    
+
     video_files = [f for f in os.listdir(videos_dir) if f.endswith('.mp4')]
-    
+
     for i, video_file in enumerate(video_files):
-        if video_file in video_to_label:
-            label = video_to_label[video_file]
-            safe_label = sanitize_filename(label)
-            label_dir = os.path.join(output_dir, safe_label)
-            os.makedirs(label_dir, exist_ok=True)
-            
-            video_path = os.path.join(videos_dir, video_file)
-            output_path = os.path.join(label_dir, '0.npz')
-            
-            print(f"Processing {i+1}/{len(video_files)}: {video_file} -> {safe_label}/0.npz")
-            extract_keypoints(video_path, output_path, show_video=False)
-        else:
+        if video_file not in video_to_label:
             print(f"Warning: No label found for {video_file}")
+            continue
+
+        label = video_to_label[video_file]
+        safe_label = sanitize_filename(label)
+        label_dir = os.path.join(output_dir, safe_label)
+        os.makedirs(label_dir, exist_ok=True)
+
+        source_id = sanitize_filename(os.path.splitext(video_file)[0])
+        output_path = os.path.join(label_dir, f'{source_id}.npz')
+
+        if os.path.exists(output_path):
+            print(f"Skip {i+1}/{len(video_files)}: {video_file} (already extracted)")
+            continue
+
+        video_path = os.path.join(videos_dir, video_file)
+        print(f"Processing {i+1}/{len(video_files)}: {video_file} -> {safe_label}/{source_id}.npz")
+        extract_keypoints(video_path, output_path, show_video=False)
 
 def main():
     parser = argparse.ArgumentParser()
