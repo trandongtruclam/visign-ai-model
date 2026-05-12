@@ -42,47 +42,214 @@ def scale_keypoints(keypoints, scale_factor):
     center = np.mean(keypoints, axis=0, keepdims=True)
     return (keypoints - center) * scale_factor + center
 
-def augment_keypoints(pose, left_hand, right_hand, face, 
-                     k_min=0.8, k_max=1.2, 
-                     sigma_body=0.02, sigma_hand=0.015, sigma_face=0.01):
-    """
-    Augment keypoints using vector-based scaling and Gaussian noise.
 
-    Args:
-        pose: (N, 25, 3) - pose keypoints
-        left_hand: (N, 21, 3) - left hand keypoints  
-        right_hand: (N, 21, 3) - right hand keypoints
-        face: (N, 468, 3) - face keypoints
-        k_min, k_max: range for scaling factor
-        sigma_*: standard deviation for noise
+# ---------------------------------------------------------------------------
+# Mirror augmentation
+# ---------------------------------------------------------------------------
+#
+# After applying UPPER_BODY_INDEXES in the extractor the (T, 25, 3) pose
+# array has the following per-keypoint layout (positions are array indices,
+# NOT MediaPipe ids):
+#
+#   0:nose
+#   1:l_eye_inner  2:l_eye  3:l_eye_outer
+#   4:r_eye_inner  5:r_eye  6:r_eye_outer
+#   7:l_ear        8:r_ear
+#   9:mouth_l     10:mouth_r
+#  11..16: left arm  (shoulder, elbow, wrist, pinky, index, thumb)
+#  17..22: right arm (shoulder, elbow, wrist, pinky, index, thumb)
+#  23:l_hip       24:r_hip
+#
+# On a horizontal mirror these index pairs must be swapped after flipping
+# the x coordinate of every landmark.
+POSE_MIRROR_PAIRS = [
+    (1, 4), (2, 5), (3, 6),                                            # eyes
+    (7, 8),                                                            # ears
+    (9, 10),                                                           # mouth
+    (11, 17), (12, 18), (13, 19), (14, 20), (15, 21), (16, 22),        # arms
+    (23, 24),                                                          # hips
+]
+
+
+def _flip_x(arr):
+    """Flip the x coordinate in-place-safe (only operates on a copy)."""
+    out = arr.copy()
+    out[..., 0] = 1.0 - out[..., 0]
+    return out
+
+
+def _mirror_pose(pose):
+    out = _flip_x(pose)
+    for a, b in POSE_MIRROR_PAIRS:
+        out[:, [a, b]] = out[:, [b, a]]
+    return out
+
+
+def _mirror_hands(left_hand, right_hand):
+    """A horizontally-mirrored left hand becomes the new right hand, and
+    vice versa. Within a hand the 21 anatomical landmark indices stay the
+    same — they describe the same anatomical parts of what is now the
+    opposite-side hand.
+    """
+    new_left = _flip_x(right_hand)
+    new_right = _flip_x(left_hand)
+    return new_left, new_right
+
+
+def _mirror_face(face):
+    """Approximate face mirror: flip x only. A fully anatomical mirror
+    requires the MediaPipe FaceMesh symmetric-index table, which is large
+    and undocumented for our face-subset. The face-subset features mostly
+    encode non-manual markers (eyebrow / mouth state) that are largely
+    left-right symmetric, so this approximation is acceptable.
+    """
+    return _flip_x(face)
+
+
+def mirror_keypoints(pose, left_hand, right_hand, face):
+    """Horizontal mirror of an entire clip (pose + both hands + face)."""
+    pose_m = _mirror_pose(pose)
+    lh_m, rh_m = _mirror_hands(left_hand, right_hand)
+    face_m = _mirror_face(face)
+    return pose_m, lh_m, rh_m, face_m
+
+
+# ---------------------------------------------------------------------------
+# Time-warp augmentation
+# ---------------------------------------------------------------------------
+
+def _hand_present_mask(hand):
+    """Per-frame binary mask (1 = at least one landmark != 0). Operates on
+    x/y coordinates only — z is ignored to stay consistent with
+    preprocess_pipeline.hand_present_mask."""
+    return (hand[:, :, :2].sum(axis=(1, 2)) != 0).astype(np.float32)
+
+
+def _resample_xy(arr, new_idx, src_idx):
+    """Linear interpolation along axis 0 for an array of shape (T, K, C)."""
+    T_in, K, C = arr.shape
+    out = np.empty((new_idx.shape[0], K, C), dtype=np.float32)
+    for kk in range(K):
+        for cc in range(C):
+            out[:, kk, cc] = np.interp(new_idx, src_idx, arr[:, kk, cc])
+    return out
+
+
+def time_warp_keypoints(pose, left_hand, right_hand, face, k):
+    """Stretch (k > 1) or compress (k < 1) the signing timeline by factor k.
+
+    Output length matches the input length. Output frame t samples source
+    frame t/k (clamped to [0, T-1]). Per-frame missing-hand status is
+    propagated correctly: the source presence mask is linearly interpolated
+    onto the new timeline and frames below 0.5 are forced back to zero.
+    """
+    T = pose.shape[0]
+    src_idx = np.arange(T, dtype=np.float32)
+    # output frame t reads from source position t / k
+    new_idx = np.clip(src_idx / float(k), 0.0, T - 1.0).astype(np.float32)
+
+    pose_w = _resample_xy(pose, new_idx, src_idx)
+    face_w = _resample_xy(face, new_idx, src_idx)
+
+    lh_present_src = _hand_present_mask(left_hand)
+    rh_present_src = _hand_present_mask(right_hand)
+    lh_present_w = np.interp(new_idx, src_idx, lh_present_src)
+    rh_present_w = np.interp(new_idx, src_idx, rh_present_src)
+
+    lh_w = _resample_xy(left_hand, new_idx, src_idx)
+    rh_w = _resample_xy(right_hand, new_idx, src_idx)
+    lh_w[lh_present_w < 0.5] = 0.0
+    rh_w[rh_present_w < 0.5] = 0.0
+    return pose_w, lh_w, rh_w, face_w
+
+
+# ---------------------------------------------------------------------------
+# Main augment_keypoints entry point
+# ---------------------------------------------------------------------------
+
+def augment_keypoints(pose, left_hand, right_hand, face,
+                     k_min=0.8, k_max=1.2,
+                     sigma_body=0.02, sigma_hand=0.015, sigma_face=0.01,
+                     mirror_prob=0.0,
+                     time_warp_prob=0.0, time_warp_min=0.85, time_warp_max=1.15):
+    """Augment one keypoint clip.
+
+    Pipeline (each step is independent and probabilistic):
+        1. (prob `mirror_prob`)   horizontal mirror: x-flip + L/R swap
+        2. (prob `time_warp_prob`) timeline rescale by factor k_t ~
+           U[time_warp_min, time_warp_max]
+        3. (always) global scale around the centroid by k_s ~ U[k_min, k_max]
+        4. (always) per-channel Gaussian noise
+        5. (always) clip x,y to [0,1]
+        6. (always) restore originally-missing hand frames to zero so the
+           downstream `hand_present_mask` keeps reporting the truth (this
+           is the fix for the augmentation B1 bug — Gaussian noise on an
+           all-zero "missing hand" otherwise turns it into a fictitious
+           present hand and disables attention masking).
+
+    Defaults preserve the previous behaviour (`mirror_prob=time_warp_prob=0`)
+    except that step 6 is now always applied. Pass `mirror_prob=0.5
+    time_warp_prob=0.7` for the recommended retraining recipe.
     """
     pose_aug = pose.copy().astype(np.float32)
     left_hand_aug = left_hand.copy().astype(np.float32)
     right_hand_aug = right_hand.copy().astype(np.float32)
     face_aug = face.copy().astype(np.float32)
 
-    scale_factor = random.uniform(k_min, k_max)
+    # 0. Record per-frame missing-hand masks BEFORE any transformation.
+    lh_present = _hand_present_mask(left_hand_aug).astype(bool)
+    rh_present = _hand_present_mask(right_hand_aug).astype(bool)
 
+    # 1. Mirror
+    if mirror_prob > 0 and random.random() < mirror_prob:
+        pose_aug, left_hand_aug, right_hand_aug, face_aug = mirror_keypoints(
+            pose_aug, left_hand_aug, right_hand_aug, face_aug
+        )
+        # The left/right semantics swapped — swap the masks accordingly.
+        lh_present, rh_present = rh_present, lh_present
+
+    # 2. Time-warp
+    if time_warp_prob > 0 and random.random() < time_warp_prob:
+        k_t = random.uniform(time_warp_min, time_warp_max)
+        pose_aug, left_hand_aug, right_hand_aug, face_aug = time_warp_keypoints(
+            pose_aug, left_hand_aug, right_hand_aug, face_aug, k_t
+        )
+        # The presence mask was already remapped inside time_warp_keypoints
+        # (missing frames re-zeroed); recompute our boolean record from it.
+        lh_present = _hand_present_mask(left_hand_aug).astype(bool)
+        rh_present = _hand_present_mask(right_hand_aug).astype(bool)
+
+    # 3. Global scale around centroid
+    scale_factor = random.uniform(k_min, k_max)
     pose_aug = scale_keypoints(pose_aug, scale_factor)
     left_hand_aug = scale_keypoints(left_hand_aug, scale_factor)
     right_hand_aug = scale_keypoints(right_hand_aug, scale_factor)
     face_aug = scale_keypoints(face_aug, scale_factor)
 
+    # 4. Per-channel Gaussian noise
     pose_aug = add_noise(pose_aug, sigma_body)
     left_hand_aug = add_noise(left_hand_aug, sigma_hand)
     right_hand_aug = add_noise(right_hand_aug, sigma_hand)
     face_aug = add_noise(face_aug, sigma_face)
 
+    # 5. Clip x,y to [0,1] (z is left unclipped)
     pose_aug[..., :2] = np.clip(pose_aug[..., :2], 0.0, 1.0)
     left_hand_aug[..., :2] = np.clip(left_hand_aug[..., :2], 0.0, 1.0)
     right_hand_aug[..., :2] = np.clip(right_hand_aug[..., :2], 0.0, 1.0)
     face_aug[..., :2] = np.clip(face_aug[..., :2], 0.0, 1.0)
 
+    # 6. Restore missing-hand frames to all-zero so hand_present_mask in
+    #    preprocess_pipeline.py keeps reporting the truth.
+    left_hand_aug[~lh_present] = 0.0
+    right_hand_aug[~rh_present] = 0.0
+
     return pose_aug, left_hand_aug, right_hand_aug, face_aug
 
 def augment_file(input_path, output_dir, n_augmentations=10,
                 k_min=0.8, k_max=1.2, sigma_body=0.02, sigma_hand=0.015, sigma_face=0.01,
-                source_id=None, skip_augmentation=False):
+                source_id=None, skip_augmentation=False,
+                mirror_prob=0.0,
+                time_warp_prob=0.0, time_warp_min=0.85, time_warp_max=1.15):
     """
     Augment a .npz keypoint file and save augmented versions.
 
@@ -132,7 +299,11 @@ def augment_file(input_path, output_dir, n_augmentations=10,
         pose_aug, left_hand_aug, right_hand_aug, face_aug = augment_keypoints(
             pose, left_hand, right_hand, face,
             k_min=k_min, k_max=k_max,
-            sigma_body=sigma_body, sigma_hand=sigma_hand, sigma_face=sigma_face
+            sigma_body=sigma_body, sigma_hand=sigma_hand, sigma_face=sigma_face,
+            mirror_prob=mirror_prob,
+            time_warp_prob=time_warp_prob,
+            time_warp_min=time_warp_min,
+            time_warp_max=time_warp_max,
         )
 
         output_path = os.path.join(output_dir, f"{source_id}__{i+1}.npz")
@@ -148,7 +319,9 @@ def augment_file(input_path, output_dir, n_augmentations=10,
 
 def process_folder(input_folder, output_folder, n_augmentations=10,
                   k_min=0.8, k_max=1.2, sigma_body=0.02, sigma_hand=0.015, sigma_face=0.01,
-                  splits=None, augment_splits=("train",)):
+                  splits=None, augment_splits=("train",),
+                  mirror_prob=0.0,
+                  time_warp_prob=0.0, time_warp_min=0.85, time_warp_max=1.15):
     """
     Process all .npz files in `input_folder` and augment them, preserving
     directory structure.
@@ -204,6 +377,10 @@ def process_folder(input_folder, output_folder, n_augmentations=10,
             k_min, k_max, sigma_body, sigma_hand, sigma_face,
             source_id=source_id,
             skip_augmentation=skip_aug,
+            mirror_prob=mirror_prob,
+            time_warp_prob=time_warp_prob,
+            time_warp_min=time_warp_min,
+            time_warp_max=time_warp_max,
         )
         if skip_aug:
             stats["copied_only"] += 1
@@ -231,6 +408,18 @@ def main():
                              'are copied as-is (original only).')
     parser.add_argument('--augment-splits', nargs='+', default=["train"],
                         help='Which splits to augment (default: train only).')
+    parser.add_argument('--mirror-prob', type=float, default=0.0,
+                        help='Probability of applying a horizontal mirror to each augmented '
+                             'sample (default: 0.0 — off, for backward compatibility). '
+                             'Recommended: 0.5.')
+    parser.add_argument('--time-warp-prob', type=float, default=0.0,
+                        help='Probability of applying a timeline rescale to each augmented '
+                             'sample (default: 0.0). Recommended: 0.7.')
+    parser.add_argument('--time-warp-min', type=float, default=0.85,
+                        help='Lower bound of time-warp factor k (default: 0.85). '
+                             'k<1 compresses the signing duration; k>1 stretches it.')
+    parser.add_argument('--time-warp-max', type=float, default=1.15,
+                        help='Upper bound of time-warp factor k (default: 1.15).')
 
     args = parser.parse_args()
 
@@ -239,6 +428,13 @@ def main():
         return
 
     splits = _load_splits(args.splits)
+
+    aug_kwargs = dict(
+        mirror_prob=args.mirror_prob,
+        time_warp_prob=args.time_warp_prob,
+        time_warp_min=args.time_warp_min,
+        time_warp_max=args.time_warp_max,
+    )
 
     if os.path.isfile(args.input):
         if not args.input.endswith('.npz'):
@@ -252,12 +448,14 @@ def main():
         augment_file(args.input, args.output, args.n,
                      args.kmin, args.kmax,
                      args.sigma_body, args.sigma_hand, args.sigma_face,
-                     source_id=source_id, skip_augmentation=skip_aug)
+                     source_id=source_id, skip_augmentation=skip_aug,
+                     **aug_kwargs)
     else:
         process_folder(args.input, args.output, args.n,
                        args.kmin, args.kmax,
                        args.sigma_body, args.sigma_hand, args.sigma_face,
-                       splits=splits, augment_splits=tuple(args.augment_splits))
+                       splits=splits, augment_splits=tuple(args.augment_splits),
+                       **aug_kwargs)
 
 if __name__ == "__main__":
     main()
