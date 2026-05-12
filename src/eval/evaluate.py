@@ -95,8 +95,13 @@ def build_eval_samples(
     label2idx: Dict[str, int],
 ) -> List[SampleInfo]:
     df = pd.read_csv(index_csv)
+    # IMPORTANT: do NOT reset_index after filtering — feature files in
+    # `preprocessed_npz/` are named with the GLOBAL row index that the
+    # preprocess pipeline used while iterating the *unfiltered* index.csv.
+    # Resetting here would shift every row to a local 0..N index and every
+    # path lookup would miss.
     if "split" in df.columns and split != "all":
-        df = df[df["split"] == split].reset_index(drop=True)
+        df = df[df["split"] == split]
     elif split != "all":
         raise ValueError(
             f"index.csv has no `split` column but --split={split!r} was requested. "
@@ -109,7 +114,7 @@ def build_eval_samples(
     samples: List[SampleInfo] = []
     missing: List[str] = []
     skipped_unknown_label = 0
-    for row_idx, row in df.iterrows():
+    for row_idx, row in df.iterrows():  # row_idx is the global index from the full csv
         label = str(row["label"])
         if label not in label2idx:
             skipped_unknown_label += 1
@@ -128,6 +133,16 @@ def build_eval_samples(
 
     if missing:
         print(f"[warn] {len(missing)} feature files missing (first 3): {missing[:3]}")
+        if len(samples) == 0:
+            print(
+                "[error] Every row in the requested split is missing on disk. "
+                "Two common causes:\n"
+                "  1. preprocessed_npz/ was generated from a *different* index.csv "
+                "than the one you just passed. Re-run preprocess_pipeline.py with "
+                "the same --splits-json so file names line up.\n"
+                "  2. You truncated/regenerated index.csv after preprocessing. "
+                "Either regenerate the feature files or restore the original index.csv."
+            )
     if skipped_unknown_label:
         print(
             f"[warn] {skipped_unknown_label} rows skipped because their label is "
