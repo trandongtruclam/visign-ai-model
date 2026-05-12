@@ -201,20 +201,43 @@ def compute_metrics(
         raise RuntimeError("No predictions collected; the test split is empty.")
 
     top1_acc = float((top1 == targets).mean())
+    k_out = topk.shape[1]
     topk_acc = float(np.mean([t in topk[i] for i, t in enumerate(targets)]))
+    # Top-3 is a cheap intermediate signal when top-5 collapses to top-1
+    if k_out >= 3:
+        top3_acc = float(np.mean([t in topk[i, :3] for i, t in enumerate(targets)]))
+    else:
+        top3_acc = top1_acc
 
-    macro_f1 = float(f1_score(targets, top1, labels=list(range(num_classes)),
-                              average="macro", zero_division=0))
-    weighted_f1 = float(f1_score(targets, top1, labels=list(range(num_classes)),
-                                 average="weighted", zero_division=0))
+    all_labels = list(range(num_classes))
+    macro_f1_all = float(
+        f1_score(targets, top1, labels=all_labels, average="macro", zero_division=0)
+    )
+    weighted_f1 = float(
+        f1_score(targets, top1, labels=all_labels, average="weighted", zero_division=0)
+    )
+
+    # Macro F1 restricted to classes that actually appear in the test set —
+    # this is the number you care about when ~93 % of the vocabulary has
+    # zero support and would otherwise drag macro_f1 down to noise.
+    supported_labels = sorted(set(int(t) for t in targets.tolist()))
+    macro_f1_supported = float(
+        f1_score(
+            targets,
+            top1,
+            labels=supported_labels,
+            average="macro",
+            zero_division=0,
+        )
+    )
 
     precision, recall, f1, support = precision_recall_fscore_support(
-        targets, top1, labels=list(range(num_classes)), zero_division=0
+        targets, top1, labels=all_labels, zero_division=0
     )
-    cm = confusion_matrix(targets, top1, labels=list(range(num_classes)))
+    cm = confusion_matrix(targets, top1, labels=all_labels)
 
     per_class = []
-    for cls in range(num_classes):
+    for cls in all_labels:
         per_class.append(
             {
                 "class_idx": cls,
@@ -226,7 +249,7 @@ def compute_metrics(
             }
         )
 
-    # Worst 10 classes that actually have test support (support > 0)
+    # Worst classes that have test support (support > 0)
     supported = [pc for pc in per_class if pc["support"] > 0]
     worst = sorted(supported, key=lambda d: (d["f1"], -d["support"]))[:10]
 
@@ -247,13 +270,20 @@ def compute_metrics(
         for c, i, j in cm_flat[:20]
     ]
 
+    # How many distinct *predicted* classes does the model produce? Useful
+    # for spotting collapse / spray behaviour.
+    pred_classes_used = sorted(set(int(p) for p in top1.tolist()))
+
     return {
         "top1_acc": top1_acc,
-        f"top{topk.shape[1]}_acc": topk_acc,
-        "macro_f1": macro_f1,
+        "top3_acc": top3_acc,
+        f"top{k_out}_acc": topk_acc,
+        "macro_f1_all_classes": macro_f1_all,
+        "macro_f1_supported": macro_f1_supported,
         "weighted_f1": weighted_f1,
         "num_samples": int(targets.size),
-        "num_classes_with_support": int(np.sum(support > 0)),
+        "num_classes_with_support": len(supported_labels),
+        "num_distinct_predictions": len(pred_classes_used),
         "per_class": per_class,
         "worst_classes": worst,
         "confusion_matrix": cm,
@@ -362,18 +392,46 @@ def write_markdown_report(
                      "after generating `splits.json` to obtain the full metric set.")
         lines.append("")
     else:
-        top_k_key = next((k for k in metrics if k.startswith("top") and k.endswith("_acc")
-                          and k != "top1_acc"), None)
+        topk_keys = [k for k in metrics if k.startswith("top") and k.endswith("_acc")
+                     and k not in {"top1_acc", "top3_acc"}]
+        top_k_key = topk_keys[0] if topk_keys else None
+        n_classes_total = config.get('num_classes') or 0
+        n_supported = metrics["num_classes_with_support"]
         lines.append("## Accuracy / F1")
         lines.append("")
         lines.append("| Metric | Value |")
         lines.append("|---|---|")
         lines.append(f"| Top-1 accuracy | {metrics['top1_acc']:.4f} |")
+        lines.append(f"| Top-3 accuracy | {metrics['top3_acc']:.4f} |")
         if top_k_key:
-            lines.append(f"| {top_k_key.replace('_acc','').upper()} accuracy | {metrics[top_k_key]:.4f} |")
-        lines.append(f"| Macro F1 | {metrics['macro_f1']:.4f} |")
+            label = top_k_key.replace('_acc', '').upper()
+            lines.append(f"| {label} accuracy | {metrics[top_k_key]:.4f} |")
+        lines.append(
+            f"| Macro F1 (classes with test support, n={n_supported}) | "
+            f"**{metrics['macro_f1_supported']:.4f}** |"
+        )
+        lines.append(
+            f"| Macro F1 (all {n_classes_total} classes, incl. zero-support) | "
+            f"{metrics['macro_f1_all_classes']:.4f} |"
+        )
         lines.append(f"| Weighted F1 | {metrics['weighted_f1']:.4f} |")
-        lines.append(f"| Classes with support | {metrics['num_classes_with_support']} / {config.get('num_classes')} |")
+        lines.append(
+            f"| Classes with support | {n_supported} / {n_classes_total} "
+            f"({n_supported / max(n_classes_total, 1) * 100:.1f}%) |"
+        )
+        lines.append(
+            f"| Distinct classes predicted by the model on this split | "
+            f"{metrics['num_distinct_predictions']} |"
+        )
+        lines.append("")
+        lines.append(
+            "> **Read this:** `Macro F1 (all classes)` is dragged down by the "
+            f"{n_classes_total - n_supported} singleton-source classes that have zero test "
+            "support — they all contribute F1 = 0 to the average. "
+            "**`Macro F1 (classes with test support)` is the honest number** for the "
+            "evaluable subset. `Weighted F1` averages F1 over supported classes weighted "
+            "by support; with one sample per class it collapses to plain accuracy."
+        )
         lines.append("")
 
         lines.append("## 10 worst classes (by F1, support > 0)")
@@ -505,13 +563,19 @@ def main() -> None:
     # Print summary to stdout (in addition to the markdown file)
     print("\n===== Summary =====")
     if metrics is not None:
-        top_k_key = next((k for k in metrics if k.startswith("top") and k.endswith("_acc")
-                          and k != "top1_acc"), None)
-        print(f"Top-1     : {metrics['top1_acc']:.4f}")
+        topk_keys = [k for k in metrics if k.startswith("top") and k.endswith("_acc")
+                     and k not in {"top1_acc", "top3_acc"}]
+        top_k_key = topk_keys[0] if topk_keys else None
+        print(f"Top-1            : {metrics['top1_acc']:.4f}")
+        print(f"Top-3            : {metrics['top3_acc']:.4f}")
         if top_k_key:
-            print(f"{top_k_key:<10}: {metrics[top_k_key]:.4f}")
-        print(f"Macro F1  : {metrics['macro_f1']:.4f}")
-        print(f"Weighted F1: {metrics['weighted_f1']:.4f}")
+            print(f"{top_k_key:<17}: {metrics[top_k_key]:.4f}")
+        print(f"Macro F1 (supp)  : {metrics['macro_f1_supported']:.4f}  "
+              f"# {metrics['num_classes_with_support']} classes with test support")
+        print(f"Macro F1 (all)   : {metrics['macro_f1_all_classes']:.4f}  "
+              f"# averaged over all {config.get('num_classes')} classes")
+        print(f"Weighted F1      : {metrics['weighted_f1']:.4f}")
+        print(f"Distinct preds   : {metrics['num_distinct_predictions']}")
         print("\nWorst 10 classes:")
         for pc in metrics["worst_classes"]:
             print(f"  {pc['label']:<30} support={pc['support']:<3} f1={pc['f1']:.3f}")

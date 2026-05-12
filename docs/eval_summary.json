@@ -1,7 +1,7 @@
 {
   "checkpoint": "artifacts/lstm_150.pt",
   "split": "test",
-  "sample_count": 0,
+  "sample_count": 18,
   "config": {
     "in_feat": 628,
     "proj_dim": 256,
@@ -17,13 +17,157 @@
       "device": "cpu",
       "batch_size": 1,
       "seq_len": 150,
-      "iters": 100,
-      "mean_ms": 7.159945000894368,
-      "median_ms": 7.017449999693781,
-      "p95_ms": 8.452040009433402,
-      "min_ms": 4.8417999933008105,
-      "max_ms": 10.4779000103008
+      "iters": 50,
+      "mean_ms": 7.223559999256395,
+      "median_ms": 7.286949999979697,
+      "p95_ms": 8.331010001711547,
+      "min_ms": 5.71299999137409,
+      "max_ms": 10.072300006868318
     }
   ],
-  "metrics": null
+  "metrics": {
+    "top1_acc": 0.4444444444444444,
+    "top3_acc": 0.4444444444444444,
+    "top5_acc": 0.4444444444444444,
+    "macro_f1_all_classes": 0.029197080291970802,
+    "macro_f1_supported": 0.4444444444444444,
+    "weighted_f1": 0.4444444444444444,
+    "num_samples": 18,
+    "num_classes_with_support": 18,
+    "num_distinct_predictions": 16,
+    "worst_classes": [
+      {
+        "class_idx": 22,
+        "label": "bao giờ_",
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      },
+      {
+        "class_idx": 167,
+        "label": "dấu sắc",
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      },
+      {
+        "class_idx": 175,
+        "label": "g",
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      },
+      {
+        "class_idx": 180,
+        "label": "h",
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      },
+      {
+        "class_idx": 222,
+        "label": "p",
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      },
+      {
+        "class_idx": 226,
+        "label": "t",
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      },
+      {
+        "class_idx": 234,
+        "label": "â",
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      },
+      {
+        "class_idx": 239,
+        "label": "ô",
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      },
+      {
+        "class_idx": 240,
+        "label": "ă",
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      },
+      {
+        "class_idx": 257,
+        "label": "đúng không_",
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      }
+    ],
+    "top_confusions": [
+      {
+        "true_label": "đúng không_",
+        "pred_label": "cái túi",
+        "count": 1
+      },
+      {
+        "true_label": "ă",
+        "pred_label": "40",
+        "count": 1
+      },
+      {
+        "true_label": "ô",
+        "pred_label": "40",
+        "count": 1
+      },
+      {
+        "true_label": "â",
+        "pred_label": "bảo đảm",
+        "count": 1
+      },
+      {
+        "true_label": "t",
+        "pred_label": "e",
+        "count": 1
+      },
+      {
+        "true_label": "p",
+        "pred_label": "l",
+        "count": 1
+      },
+      {
+        "true_label": "h",
+        "pred_label": "40",
+        "count": 1
+      },
+      {
+        "true_label": "g",
+        "pred_label": "con đẻ",
+        "count": 1
+      },
+      {
+        "true_label": "dấu sắc",
+        "pred_label": "bố mẹ",
+        "count": 1
+      },
+      {
+        "true_label": "bao giờ_",
+        "pred_label": "cách ly",
+        "count": 1
+      }
+    ]
+  }
 }
