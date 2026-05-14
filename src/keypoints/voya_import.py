@@ -1,18 +1,40 @@
 """
 src/keypoints/voya_import.py
 
-Pull VOYA_VSL samples for classes that overlap with our dataset,
-convert to our native (150, K, 3) per-stream .npz format, and assign them
-to val/test in splits.json.
+Pull VOYA_VSL samples for classes that overlap with our dataset, compute the
+full 628-D feature vector that the trainer expects, append rows to index.csv
+and write `sample_<row_idx>_<label>.npy` files directly into
+preprocessed_npz/. Also assigns the new sources to val/test in splits.json.
+
+This is self-sufficient: it does NOT require `augmented/` to exist on disk
+and you do NOT need to re-run `preprocess_pipeline.py` after it. The trainer
+can pick up the new rows immediately.
+
+Usage:
+    python src/keypoints/voya_import.py \
+        --splits-json splits.json \
+        --index-csv index.csv \
+        --feature-dir preprocessed_npz \
+        --n-val 20 --n-test 20 --seed 42
 """
 from __future__ import annotations
-import argparse, json, os, re, sys, unicodedata
+import argparse, json, os, re, sys, urllib.request
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from huggingface_hub import hf_hub_download
 from scipy.interpolate import interp1d
-import urllib.request
+
+# Make sibling modules importable when run as `python src/keypoints/voya_import.py`
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+# Reuse the exact same feature engineering the trainer was trained on.
+from src.train.preprocess_pipeline import preprocess_sample  # noqa: E402
+from src.keypoints.keypoints_extractor import UPPER_BODY_INDEXES  # noqa: E402
+
 
 VOYA_REPO = "Kateht/VOYA_VSL"
 VOYA_LABELS_URL = f"https://huggingface.co/datasets/{VOYA_REPO}/resolve/main/labels.json"
@@ -21,18 +43,17 @@ POSE_SLICE = slice(0, 99)            # 33 landmarks * 3
 LH_SLICE   = slice(99, 162)          # 21 * 3
 RH_SLICE   = slice(162, 225)         # 21 * 3
 FACE_SLICE = slice(225, 1605)        # 460 * 3
-FACE_PAD_TO = 468                    # your pipeline expects 468
+FACE_PAD_TO = 468                    # preprocess_sample expects (T, 468, 3)
 
-TARGET_FRAMES = 150                  # your pipeline expects 150
+TARGET_FRAMES = 150                  # preprocess_sample expects 150-frame inputs
 
 
 def normalise_name(s: str) -> str:
-    """Strip regional variant suffixes and user-style annotations to compare names."""
+    """Strip regional-variant suffixes and our `_word_` annotation markers."""
     s = s.strip().lower()
     for suf in (" (bắc)", " (nam)", " (trung)"):
         if s.endswith(suf):
             s = s[: -len(suf)].strip()
-    # collapse any "_word_" annotation marker
     s = re.sub(r"\s*_[^_]+_\s*", " ", s).strip()
     return s
 
@@ -53,31 +74,46 @@ def resample(arr: np.ndarray, target: int) -> np.ndarray:
 
 
 def convert_one_sample(seq_1605: np.ndarray) -> dict:
-    """Take one VOYA (60, 1605) sample and return our (150, *, 3) dict."""
-    pose = seq_1605[:, POSE_SLICE].reshape(-1, 33, 3)
+    """VOYA (60, 1605) → our intermediate `.npz` layout, matching what
+    `keypoints_extractor.py` writes for QIPEDC clips. Pose is filtered to
+    25 upper-body landmarks so `preprocess_sample` consumes it unchanged."""
+    pose_33 = seq_1605[:, POSE_SLICE].reshape(-1, 33, 3)
     lh   = seq_1605[:, LH_SLICE].reshape(-1, 21, 3)
     rh   = seq_1605[:, RH_SLICE].reshape(-1, 21, 3)
     face_460 = seq_1605[:, FACE_SLICE].reshape(-1, 460, 3)
 
-    # pad face to 468 with zeros so existing FACE_IDX_SUBSET (max idx 331) works
+    pose_25 = pose_33[:, UPPER_BODY_INDEXES, :]
     face = np.zeros((face_460.shape[0], FACE_PAD_TO, 3), dtype=np.float32)
     face[:, :460] = face_460
 
     return {
-        "pose":       resample(pose, TARGET_FRAMES).astype(np.float32),
-        "left_hand":  resample(lh,   TARGET_FRAMES).astype(np.float32),
-        "right_hand": resample(rh,   TARGET_FRAMES).astype(np.float32),
-        "face":       resample(face, TARGET_FRAMES).astype(np.float32),
+        "pose":       resample(pose_25, TARGET_FRAMES).astype(np.float32),
+        "left_hand":  resample(lh,      TARGET_FRAMES).astype(np.float32),
+        "right_hand": resample(rh,      TARGET_FRAMES).astype(np.float32),
+        "face":       resample(face,    TARGET_FRAMES).astype(np.float32),
     }
+
+
+def sanitize_filename(filename: str) -> str:
+    """Same scheme as keypoints_extractor.sanitize_filename, kept local to
+    avoid pulling MediaPipe just to do string replacement."""
+    invalid = '<>:"/\\|?*()'
+    for c in invalid:
+        filename = filename.replace(c, "_")
+    return filename.strip()
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--splits-json", default="splits.json")
-    ap.add_argument("--keypoints-dir", default="dataset/keypoints")
-    ap.add_argument("--n-val", type=int, default=20)
+    ap.add_argument("--index-csv",   default="index.csv")
+    ap.add_argument("--feature-dir", default="preprocessed_npz")
+    ap.add_argument("--keypoints-dir", default=None,
+                    help="If set, also dump the intermediate (pose/lh/rh/face) "
+                         ".npz files here for debugging. Skipped otherwise.")
+    ap.add_argument("--n-val",  type=int, default=20)
     ap.add_argument("--n-test", type=int, default=20)
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--seed",   type=int, default=42)
     ap.add_argument("--workdir", default="voya_cache")
     args = ap.parse_args()
 
@@ -93,13 +129,30 @@ def main():
     my_norm = {normalise_name(c.split(" _")[0]): c for c in my_classes}
 
     matches = [(cid, my_norm[n]) for cid, n in voya_norm.items() if n in my_norm]
-    # If multiple VOYA classes map to the same user class (regional variants),
-    # we keep all of them; samples from different variants all count.
-    print(f"Will pull {len(matches)} VOYA class files for {len(set(m[1] for m in matches))} user classes")
+    print(f"Will pull {len(matches)} VOYA class files for "
+          f"{len(set(m[1] for m in matches))} user classes")
+
+    # Load existing index.csv so we can append. Determine the next row_idx.
+    if os.path.exists(args.index_csv):
+        existing_df = pd.read_csv(args.index_csv)
+        next_row_idx = len(existing_df)
+        existing_sources = set(existing_df.get("source_video", pd.Series(dtype=str)).tolist())
+        print(f"Existing index.csv has {next_row_idx} rows.")
+    else:
+        existing_df = pd.DataFrame(columns=["filepath", "label", "source_video", "split"])
+        next_row_idx = 0
+        existing_sources = set()
+        print("No existing index.csv; creating a fresh one.")
+
+    feat_dir = Path(args.feature_dir)
+    feat_dir.mkdir(parents=True, exist_ok=True)
+    if args.keypoints_dir:
+        Path(args.keypoints_dir).mkdir(parents=True, exist_ok=True)
 
     n_per_file = args.n_val + args.n_test
-    out_root = Path(args.keypoints_dir)
+    new_rows = []
     new_assignments = {}
+    written_features = 0
 
     for i, (cid, user_label) in enumerate(matches, 1):
         try:
@@ -119,32 +172,76 @@ def main():
         else:
             chosen = rng.choice(N, size=n_per_file, replace=False)
 
-        label_dir = out_root / user_label
-        label_dir.mkdir(parents=True, exist_ok=True)
+        safe_label = sanitize_filename(user_label)
 
         for j, idx in enumerate(chosen):
             kp = convert_one_sample(seqs[idx])
             source_id = f"VOYA_{cid}_{int(idx):04d}"
-            out_path = label_dir / f"{source_id}.npz"
-            np.savez(out_path,
+            source_key = f"{user_label}/{source_id}"
+
+            # Skip if this source is already in the index (re-run safety)
+            if source_key in existing_sources or source_key in new_assignments:
+                continue
+
+            # Optionally dump intermediate .npz for debugging
+            if args.keypoints_dir:
+                npz_dir = Path(args.keypoints_dir) / safe_label
+                npz_dir.mkdir(parents=True, exist_ok=True)
+                np.savez(npz_dir / f"{source_id}.npz",
+                         pose=kp["pose"], left_hand=kp["left_hand"],
+                         right_hand=kp["right_hand"], face=kp["face"])
+
+            # Compute features in-memory using the same logic the trainer expects.
+            # preprocess_sample reads from a path, so write a small temp .npz.
+            tmp_npz = feat_dir / f".__tmp_voya_{cid}_{idx}.npz"
+            np.savez(tmp_npz,
                      pose=kp["pose"], left_hand=kp["left_hand"],
                      right_hand=kp["right_hand"], face=kp["face"])
-            source_key = f"{user_label}/{source_id}"
-            new_assignments[source_key] = "val" if j < args.n_val else "test"
+            try:
+                feat = preprocess_sample(str(tmp_npz))
+            finally:
+                try: os.remove(tmp_npz)
+                except OSError: pass
 
-        print(f"[{i}/{len(matches)}] {user_label}: wrote {len(chosen)} samples")
-        # Don't keep VOYA's bulky source npz around once we've extracted
-        try:
-            os.remove(local)
-        except OSError:
-            pass
+            row_idx = next_row_idx
+            next_row_idx += 1
+            out_npy = feat_dir / f"sample_{row_idx}_{safe_label}.npy"
+            np.save(out_npy, feat)
+            written_features += 1
 
-    # Merge into splits.json
+            assigned_split = "val" if j < args.n_val else "test"
+            new_rows.append({
+                "filepath": f"VOYA/{safe_label}/{source_id}.npz",
+                "label": user_label,
+                "source_video": source_key,
+                "split": assigned_split,
+            })
+            new_assignments[source_key] = assigned_split
+
+        print(f"[{i}/{len(matches)}] {user_label}: wrote {len(chosen)} samples "
+              f"(features so far: {written_features})")
+
+        try: os.remove(local)
+        except OSError: pass
+
+    # Persist updated index.csv (append new rows; preserve original order)
+    if new_rows:
+        new_df = pd.DataFrame(new_rows)
+        combined = pd.concat([existing_df, new_df], ignore_index=True)
+        # Some old index.csv versions don't have a 'split' column; coerce.
+        if "split" not in existing_df.columns:
+            combined["split"] = combined["split"].fillna("train")
+        combined.to_csv(args.index_csv, index=False)
+        print(f"Appended {len(new_rows)} rows to {args.index_csv} "
+              f"(total: {len(combined)})")
+    else:
+        print("No new rows to add (everything was already present).")
+
     sources.update(new_assignments)
-    splits["voya_added"] = len(new_assignments)
+    splits["voya_added"] = len(new_assignments) + splits.get("voya_added", 0)
     with open(args.splits_json, "w", encoding="utf-8") as f:
         json.dump(splits, f, ensure_ascii=False, indent=2)
-    print(f"Added {len(new_assignments)} VOYA sources; updated {args.splits_json}")
+    print(f"Updated {args.splits_json} with {len(new_assignments)} new source assignments.")
 
 
 if __name__ == "__main__":

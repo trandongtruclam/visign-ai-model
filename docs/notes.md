@@ -1,3 +1,60 @@
+Searched — and there's actually a strong option for you. First, a confirmation worth flagging:
+
+## You're already maxing out QIPEDC
+
+Your `videos_crawler.ipynb` crawls `https://qipedc.moet.gov.vn/`, and your label IDs (`D0529`, `W00011`, `W00145B/N/T`) are QIPEDC's dictionary IDs with the Bắc/Trung/Nam regional suffixes. **That source is exhausted for "more takes per word"** — QIPEDC publishes 1–3 regional variants per gloss and that's it. Crawling more glosses would give you more *classes*, not more *takes per class*. So I needed to find a different source.
+
+## The one that actually fixes your problem
+
+### Multi-VSL (WACV 2025) — Hanoi University of Science and Technology
+- **1,000 glosses, 30 signers, 3 camera angles, ~28 instances per gloss** (avg).
+- Glosses are sampled from the same *Vietnamese Sign Language Dictionary* QIPEDC uses, so label overlap with your 274 classes should be **high** (likely 100–250 classes overlapping; needs verification).
+- Train/val/test is split **by signer**, not by clip — exactly the kind of split your evaluation needs.
+- Hosted on Google Drive, BibTeX from the WACV 2025 paper.
+- Repo: [github.com/Etdihatthoc/Multi-VSL_WACV_2025](https://github.com/Etdihatthoc/Multi-VSL_WACV_2025) (the README is empty; you'll need to open the issues/Drive folder for download links — or email the authors at HUST: `lenp@soict.hust.edu.vn`).
+- **Caveat:** raw RGB videos, not keypoints. You'd need to run your existing `keypoints_extractor.py` over them. Estimated ~84,000 videos × 1–3 s of MediaPipe each = ~24–72 GPU-hours, or split across multiple Colab sessions. If you only run it for the ~250 glosses that overlap with your labels (≈ 250 × 30 signers × 3 views = 22,500 videos), that's much more tractable (~6–18 hours).
+- Why this is the right choice: 28 instances/gloss × 3 views means you can put 6–8 signers/views per class into val/test and have **6–8 samples per class** instead of 1. Your val_f1 stops being a coin flip.
+
+### Two also-rans (lower impact but easier)
+
+- **VOYA_VSL** on Hugging Face — 161 classes, MediaPipe keypoints already extracted, 56 GB. [huggingface.co/datasets/Kateht/VOYA_VSL](https://huggingface.co/datasets/Kateht/VOYA_VSL). Different feature shape `(60, 1605)` vs your `(150, 628)` — you'd need to re-derive features from raw keypoints, but at least no MediaPipe runtime cost. Class overlap with your 274 is unknown without inspecting `labels.json`.
+- **KVSL** on GitHub — same source you're using (QIPEDC) with their own keypoint extraction. Won't give you more clips per word, but their preprocessing differences might be useful as a reference. [github.com/LeNguyenAnhKhoa/KVSL](https://github.com/LeNguyenAnhKhoa/KVSL).
+
+### Worth knowing but not directly useful
+
+- **VSL Object Detection on Roboflow** — 1,300 images of hand-shapes. For image classification, not video. Not relevant to your sequence model.
+- **QIPEDC additional glosses** — 4,000 total exist; you have 274. Could expand vocabulary, doesn't fix your per-class count problem.
+
+## Realistic plan (cheapest path to a trustworthy val set)
+
+1. **Email Multi-VSL authors** (the email above) asking for the dataset access link or a class list. Mention you only need the subset of glosses overlapping with your 274 labels — this often unlocks a smaller, faster download. Takes maybe 10 minutes of your time and reply usually comes within a few days.
+2. **While waiting**, download VOYA_VSL's `labels.json` (a few KB) and check overlap with your `splits.json` keys:
+
+```python
+import json, requests
+voya = requests.get("https://huggingface.co/datasets/Kateht/VOYA_VSL/resolve/main/labels.json").json()
+mine = set(k.split("/")[0] for k in json.load(open("splits.json"))["sources"])  # your 274 class names
+voya_names = set(voya.values())
+overlap = mine & voya_names
+print(f"VOYA overlap: {len(overlap)} / {len(mine)} of your classes")
+print(sorted(overlap)[:20])
+```
+
+If VOYA overlap ≥ 100 classes, it's worth pulling for those classes only. If overlap is tiny (< 30), skip VOYA and just wait for Multi-VSL.
+
+3. **Once you have Multi-VSL videos**, run `keypoints_extractor.py` over them, dedupe filenames to avoid clashing with QIPEDC IDs, append to your `dataset/keypoints/<label>/` directories under new source IDs (e.g. `MVSL_signer07_front`), and re-run `split_sources.py`. The new `splits.json` will allocate multiple sources per class into val/test naturally.
+
+## What I would not bother doing
+
+- **Recording videos yourself.** You explicitly said no time, and even a couple of extra takes wouldn't fix the structural problem (you'd still be the single signer for those extra clips, defeating the point of cross-signer generalisation).
+- **Synthetic augmentation alone.** You're already at 50× per source — the issue isn't quantity, it's that augmenting one signer doesn't create the variety that 30 different signers do.
+
+## Honest expectation-setting
+
+With Multi-VSL added, your val/test sets go from 17/18 samples to plausibly 1,000+ samples each. That alone — without changing your model — will probably show your real Top‑1 sits somewhere between 20 % and 50 % (the 11 % vs 44 % swing collapses into one stable number). At that point you can actually *measure* whether less augmentation, more regularisation, or a different model helps.
+
+Send me the VOYA overlap output once you run it and we can decide whether VOYA is worth pulling while Multi-VSL replies, or whether to just wait.
+
 Below is the full `MODEL_AUDIT.md` for the `ai-model/` VSL pipeline. You can copy it directly into a file.
 
 ---
@@ -344,5 +401,3 @@ Concretely:
 5. Run it on the current checkpoint and commit the report.
 
 That single change converts every later experiment from "feels-faster" speculation into measurable progress. Every other recommendation above depends on it.
-
-
