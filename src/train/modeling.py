@@ -580,7 +580,6 @@ def train_model(args: argparse.Namespace) -> None:
         mode="min",
         factor=args.lr_factor,
         patience=args.lr_patience,
-        verbose=True,
         min_lr=args.min_lr,
     )
 
@@ -600,7 +599,11 @@ def train_model(args: argparse.Namespace) -> None:
         )
 
         val_metrics = evaluate(model, val_loader, loss_fn, device)
+        lr_before = optimizer.param_groups[0]["lr"]
         scheduler.step(val_metrics["loss"])
+        lr_after = optimizer.param_groups[0]["lr"]
+        if lr_after < lr_before:
+            print(f"  [scheduler] reducing learning rate to {lr_after:.3e}")
 
         metrics = {
             "epoch": epoch,

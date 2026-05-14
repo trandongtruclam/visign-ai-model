@@ -2,9 +2,23 @@ import json
 import os
 import glob
 import re
+import zipfile
+import zlib
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
+
+
+# Errors np.load / npz access can raise on a corrupted or truncated file.
+# Keep this tuple in sync with the `except` clauses below.
+_NPZ_LOAD_ERRORS = (
+    zipfile.BadZipFile,
+    zlib.error,
+    OSError,
+    EOFError,
+    ValueError,
+    KeyError,
+)
 
 _LEGACY_NUMERIC_STEM = re.compile(r"^\d+$")
 
@@ -97,12 +111,14 @@ def hand_present_mask(hand):
 
 # Preprocess one npz sample to feature sequence
 def preprocess_sample(npz_path, use_pca=False, n_pca=30, add_velocity=True):
-    d = np.load(npz_path)
-    pose = d['pose']           # (150, 25, 3)
-    lh_raw = d['left_hand']   # (150, 21, 3)
-    rh_raw = d['right_hand']  # (150, 21, 3)
-    face = d['face']           # (150, 468, 3)
-    
+    # Use a context manager so the underlying zipfile handle is closed even
+    # if a per-key decompression fails partway through a 14k-file run.
+    with np.load(npz_path) as d:
+        pose = d['pose']           # (150, 25, 3)
+        lh_raw = d['left_hand']   # (150, 21, 3)
+        rh_raw = d['right_hand']  # (150, 21, 3)
+        face = d['face']           # (150, 468, 3)
+
     # Check hand presence before normalization
     lh_mask = hand_present_mask(lh_raw)
     rh_mask = hand_present_mask(rh_raw)
@@ -144,6 +160,10 @@ if __name__ == "__main__":
                         help="Optional splits.json from split_sources.py to add a `split` column")
     parser.add_argument("--no-preprocess", action="store_true",
                         help="Only build index.csv, skip feature extraction")
+    parser.add_argument("--strict", action="store_true",
+                        help="Abort on the first unreadable .npz instead of "
+                             "skipping it (default: skip + log to "
+                             "<index-csv>.failed.csv).")
     args = parser.parse_args()
 
     build_index_csv(args.data_dir, args.index_csv, splits_json=args.splits_json)
@@ -154,11 +174,51 @@ if __name__ == "__main__":
     df = pd.read_csv(args.index_csv)
     out_dir = args.feature_dir
     os.makedirs(out_dir, exist_ok=True)
-    for i, row in df.iterrows():
+
+    # We rewrite index.csv at the end so that its row order matches the
+    # `sample_<i>_<label>.npy` filenames downstream (modeling.py joins on the
+    # row index). A running counter `new_i` is used for the filename so that
+    # skipped/corrupted rows do not leave gaps in the numbering.
+    kept_rows = []
+    failed = []
+    total = len(df)
+    for orig_i, row in df.iterrows():
         fpath = row['filepath']
         label = row['label']
-        feat = preprocess_sample(fpath)
-        out_path = os.path.join(out_dir, f"sample_{i}_{label}.npy")
+        try:
+            feat = preprocess_sample(fpath)
+        except _NPZ_LOAD_ERRORS as e:
+            msg = f"{type(e).__name__}: {e}"
+            print(f"  [SKIP] row={orig_i} {fpath} -> {msg}", flush=True)
+            failed.append({"orig_row": orig_i, "filepath": fpath, "error": msg})
+            if args.strict:
+                raise
+            continue
+
+        new_i = len(kept_rows)
+        out_path = os.path.join(out_dir, f"sample_{new_i}_{label}.npy")
         np.save(out_path, feat)
-        if i % 100 == 0:
-            print(f"Processed {i}/{len(df)}")
+        kept_rows.append(row)
+        if (new_i + 1) % 100 == 0:
+            print(
+                f"Processed {new_i + 1}/{total}"
+                f" (failures so far: {len(failed)})",
+                flush=True,
+            )
+
+    kept_df = pd.DataFrame(kept_rows).reset_index(drop=True)
+    kept_df.to_csv(args.index_csv, index=False)
+    print(
+        f"\nDone. Wrote features for {len(kept_df)}/{total} samples."
+        f" Skipped {len(failed)} unreadable file(s)."
+    )
+    if "split" in kept_df.columns:
+        print("Split counts (after skip):")
+        print(kept_df["split"].value_counts().to_string())
+    if failed:
+        failed_csv = os.path.splitext(args.index_csv)[0] + ".failed.csv"
+        pd.DataFrame(failed).to_csv(failed_csv, index=False)
+        print(
+            f"Failed files logged to {failed_csv}."
+            " Re-run augment.py on the affected source(s) to recover them."
+        )

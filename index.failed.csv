@@ -1,0 +1,2 @@
+orig_row,filepath,error
+13,augmented\0 _số không_\D0529__20.npz,error: Error -3 while decompressing data: invalid block type
